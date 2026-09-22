@@ -1,0 +1,1239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Reconciles a physical AV equipment inventory against a ServiceNow CMDB export and flags matches, mismatches, duplicates, and gaps by color.">
+<title>AV Inventory Health Check</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --bg:#F2F5F4; --surface:#FFFFFF; --surface-2:#E9EFED; --surface-3:#F7FAF9;
+    --border:#D8E0DD; --border-strong:#C2CDC9;
+    --text:#0E1F1C; --text-2:#48605B; --text-mute:#7E948F;
+    --accent:#0B6E66; --accent-ink:#083F3B; --accent-soft:#DEF2EE; --accent-soft-border:#B9E1D9;
+    --focus:#0B6E66;
+    --shadow:0 1px 2px rgba(14,31,28,.06), 0 8px 24px -12px rgba(14,31,28,.18);
+
+    --good-fg:#1B7A4D; --good-bg:#E3F5EA; --good-bd:#BEE3CC;
+    --warn-fg:#8A660E; --warn-bg:#FBF1DA; --warn-bd:#EFD79E;
+    --crit-fg:#B23A2D; --crit-bg:#FCE8E5; --crit-bd:#F2C4BC;
+    --absent-fg:#4E5E5B; --absent-bg:#EAEFED; --absent-bd:#D2DBD8;
+    --replace-fg:#5F49AE; --replace-bg:#EFEAFB; --replace-bd:#D4C7F2;
+    --dup-fg:#9C520B; --dup-bg:#FBEBDA; --dup-bd:#EFCC9E;
+    --review-fg:#2360A0; --review-bg:#E5EFFA; --review-bd:#BCD5F0;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0B1614; --surface:#0F1E1B; --surface-2:#152622; --surface-3:#11201D;
+      --border:#213632; --border-strong:#2C4842;
+      --text:#E7F2EF; --text-2:#A9C1BB; --text-mute:#6F8A84;
+      --accent:#3FD8C4; --accent-ink:#062522; --accent-soft:#123932; --accent-soft-border:#1F5A50;
+      --focus:#3FD8C4;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 28px -14px rgba(0,0,0,.6);
+
+      --good-fg:#5FE0A0; --good-bg:#12352590; --good-bd:#245C43;
+      --warn-fg:#F0C15C; --warn-bg:#3A2F1290; --warn-bd:#6B531F;
+      --crit-fg:#F3897C; --crit-bg:#3A1D1990; --crit-bd:#6B3229;
+      --absent-fg:#B9C9C5; --absent-bg:#1D2C2990; --absent-bd:#39504B;
+      --replace-fg:#C6B2F5; --replace-bg:#26205490; --replace-bd:#4A3D8A;
+      --dup-fg:#F2AA6B; --dup-bg:#3A270F90; --dup-bd:#6E4A1E;
+      --review-fg:#8FBBF0; --review-bg:#16273D90; --review-bd:#2E4E77;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0B1614; --surface:#0F1E1B; --surface-2:#152622; --surface-3:#11201D;
+    --border:#213632; --border-strong:#2C4842;
+    --text:#E7F2EF; --text-2:#A9C1BB; --text-mute:#6F8A84;
+    --accent:#3FD8C4; --accent-ink:#062522; --accent-soft:#123932; --accent-soft-border:#1F5A50;
+    --focus:#3FD8C4;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 28px -14px rgba(0,0,0,.6);
+
+    --good-fg:#5FE0A0; --good-bg:#12352590; --good-bd:#245C43;
+    --warn-fg:#F0C15C; --warn-bg:#3A2F1290; --warn-bd:#6B531F;
+    --crit-fg:#F3897C; --crit-bg:#3A1D1990; --crit-bd:#6B3229;
+    --absent-fg:#B9C9C5; --absent-bg:#1D2C2990; --absent-bd:#39504B;
+    --replace-fg:#C6B2F5; --replace-bg:#26205490; --replace-bd:#4A3D8A;
+    --dup-fg:#F2AA6B; --dup-bg:#3A270F90; --dup-bd:#6E4A1E;
+    --review-fg:#8FBBF0; --review-bg:#16273D90; --review-bd:#2E4E77;
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:"IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    font-size:14px; line-height:1.45;
+    padding-inline:16px; padding-block:20px 48px;
+  }
+  h1,h2,h3{font-family:"Manrope", "IBM Plex Sans", sans-serif; text-wrap:balance; margin:0;}
+  .mono{font-family:"IBM Plex Mono", ui-monospace, monospace;}
+  .page{max-width:1180px; margin:0 auto; display:flex; flex-direction:column; gap:18px;}
+  a{color:var(--accent);}
+  button{font-family:inherit;}
+  ::selection{background:var(--accent-soft);}
+  :focus-visible{outline:2px solid var(--focus); outline-offset:2px; border-radius:4px;}
+
+  /* ---------- topbar ---------- */
+  .topbar{display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;}
+  .brand{display:flex; align-items:center; gap:12px;}
+  .brand-icon{
+    width:42px; height:42px; border-radius:11px; flex:none;
+    background:linear-gradient(155deg, var(--accent), var(--accent-ink));
+    display:flex; align-items:center; justify-content:center; color:#fff;
+    box-shadow:var(--shadow);
+  }
+  .brand-icon svg{width:23px; height:23px;}
+  .brand-text h1{font-size:19px; font-weight:800; letter-spacing:-.01em;}
+  .brand-text p{margin:2px 0 0; font-size:12.5px; color:var(--text-2);}
+  .topbar-actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+
+  .btn{
+    display:inline-flex; align-items:center; gap:7px; white-space:nowrap;
+    border-radius:9px; border:1px solid var(--border-strong); background:var(--surface);
+    color:var(--text); font-size:13px; font-weight:600; padding:8px 13px; cursor:pointer;
+    transition:background .12s, border-color .12s, transform .05s;
+  }
+  .btn svg{width:15px; height:15px; flex:none;}
+  .btn:hover{background:var(--surface-2);}
+  .btn:active{transform:translateY(1px);}
+  .btn:disabled{opacity:.45; cursor:not-allowed;}
+  .btn:disabled:hover{background:var(--surface);}
+  .btn-primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink);}
+  .btn-primary:hover{filter:brightness(1.06); background:var(--accent);}
+  .btn-ghost{border-color:transparent; background:transparent;}
+  .btn-ghost:hover{background:var(--surface-2);}
+  .btn-icon{padding:8px; border-color:transparent;}
+  .btn-sm{padding:5px 9px; font-size:12px; border-radius:7px;}
+  .btn-danger-ghost{border-color:transparent; color:var(--crit-fg);}
+  .btn-danger-ghost:hover{background:var(--crit-bg);}
+
+  .pill{
+    display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600;
+    padding:6px 11px; border-radius:99px; background:var(--good-bg); color:var(--good-fg);
+    border:1px solid var(--good-bd);
+  }
+  .pill svg{width:13px; height:13px;}
+
+  /* ---------- top grid ---------- */
+  .grid-top{display:grid; grid-template-columns:1.15fr 1fr 1fr; gap:14px;}
+  @media (max-width:860px){ .grid-top{grid-template-columns:1fr;} }
+
+  .card{
+    background:var(--surface); border:1px solid var(--border); border-radius:14px;
+    padding:18px; box-shadow:var(--shadow);
+  }
+
+  .health-card{background:linear-gradient(165deg, var(--accent-ink), #08312D 60%, var(--accent-ink)); color:#EAF7F4; position:relative; overflow:hidden;}
+  :root[data-theme="light"] .health-card, .health-card{ }
+  @media (prefers-color-scheme: light){ }
+  .health-card{border-color:transparent;}
+  .health-top{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;}
+  .health-label{font-size:12.5px; font-weight:600; color:#BFE0DA; text-transform:uppercase; letter-spacing:.05em;}
+  .health-toggle{
+    width:30px; height:30px; border-radius:8px; border:1px solid rgba(255,255,255,.18);
+    background:rgba(255,255,255,.06); color:#CFE9E3; display:flex; align-items:center; justify-content:center; cursor:pointer;
+  }
+  .health-toggle svg{width:15px; height:15px;}
+  .health-toggle:hover{background:rgba(255,255,255,.14);}
+  .health-value{display:flex; align-items:baseline; gap:9px; margin-top:6px;}
+  .health-value .num{font-family:"Manrope"; font-size:42px; font-weight:800; letter-spacing:-.02em; font-variant-numeric:tabular-nums;}
+  .health-value .unit{font-size:14px; font-weight:600; color:#BFE0DA;}
+  .health-bar-track{height:8px; border-radius:99px; background:rgba(255,255,255,.14); margin-top:14px; overflow:hidden;}
+  .health-bar-fill{height:100%; border-radius:99px; background:linear-gradient(90deg, #3FD8C4, #8CF0DD); transition:width .4s ease;}
+  .health-caption{margin-top:10px; font-size:12.5px; color:#CFE7E1;}
+  .health-sample-chip{
+    margin-top:12px; display:inline-flex; align-items:center; gap:7px; font-size:11.5px;
+    background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.18); color:#CFE7E1;
+    padding:5px 9px; border-radius:99px;
+  }
+  .health-sample-chip button{background:none;border:none;color:inherit;font-weight:700;cursor:pointer;text-decoration:underline;padding:0;font-size:inherit;}
+
+  .upload-card-head{display:flex; align-items:flex-start; justify-content:space-between; gap:8px;}
+  .upload-card-title{display:flex; align-items:center; gap:9px;}
+  .upload-card-icon{
+    width:30px; height:30px; border-radius:8px; background:var(--accent-soft); color:var(--accent-ink);
+    display:flex; align-items:center; justify-content:center; flex:none;
+  }
+  :root[data-theme="dark"] .upload-card-icon, .upload-card-icon{ }
+  @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .upload-card-icon{ color:var(--accent); } }
+  .upload-card-icon svg{width:16px; height:16px;}
+  .upload-card h3{font-size:14px; font-weight:700;}
+  .upload-card .desc{font-size:12px; color:var(--text-mute); margin-top:2px;}
+  .status-chip{font-size:11px; font-weight:700; padding:3px 9px; border-radius:99px; text-transform:uppercase; letter-spacing:.04em; flex:none;}
+  .status-chip.empty{background:var(--surface-2); color:var(--text-mute);}
+  .status-chip.loaded{background:var(--good-bg); color:var(--good-fg); border:1px solid var(--good-bd);}
+  .upload-filename{display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--text-2); margin:10px 0; min-height:18px;}
+  .upload-filename svg{width:14px; height:14px; flex:none; color:var(--accent);}
+  .upload-filename .rows{color:var(--text-mute); font-family:"IBM Plex Mono", monospace; font-size:11.5px;}
+  .upload-dropzone{
+    border:1.5px dashed var(--border-strong); border-radius:10px; margin-top:10px;
+    display:flex; align-items:center; justify-content:center; padding:2px; transition:border-color .12s, background .12s;
+  }
+  .upload-dropzone.drag{border-color:var(--accent); background:var(--accent-soft);}
+  .upload-row{display:flex; gap:8px; margin-top:10px;}
+  .upload-row .btn{flex:1; justify-content:center;}
+  .upload-error{font-size:12px; color:var(--crit-fg); margin-top:8px;}
+  .mapping{margin-top:12px; border-top:1px dashed var(--border); padding-top:10px; display:grid; grid-template-columns:1fr 1fr; gap:8px 10px;}
+  .mapping label{display:block; font-size:10.5px; font-weight:700; color:var(--text-mute); text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px;}
+  .mapping select{
+    width:100%; font-size:12px; padding:5px 6px; border-radius:6px; border:1px solid var(--border-strong);
+    background:var(--surface-3); color:var(--text); font-family:inherit;
+  }
+
+  /* ---------- tiles ---------- */
+  .tiles{display:grid; grid-template-columns:repeat(7,1fr); gap:10px;}
+  @media (max-width:980px){ .tiles{grid-template-columns:repeat(4,1fr);} }
+  @media (max-width:560px){ .tiles{grid-template-columns:repeat(2,1fr);} }
+  .tile{
+    border-radius:12px; padding:13px 14px; border:1px solid; cursor:pointer; text-align:left;
+    background:var(--surface); transition:transform .08s, box-shadow .12s; box-shadow:var(--shadow);
+  }
+  .tile:hover{transform:translateY(-1px);}
+  .tile.is-active{box-shadow:0 0 0 2px var(--focus) inset, var(--shadow);}
+  .tile-icon{width:26px; height:26px; border-radius:7px; display:flex; align-items:center; justify-content:center; margin-bottom:9px;}
+  .tile-icon svg{width:14px; height:14px;}
+  .tile-value{font-family:"Manrope"; font-size:23px; font-weight:800; font-variant-numeric:tabular-nums;}
+  .tile-label{font-size:11.5px; color:var(--text-2); font-weight:600; margin-top:1px;}
+
+  /* ---------- results ---------- */
+  .results-head{display:flex; align-items:flex-start; justify-content:space-between; gap:14px; flex-wrap:wrap;}
+  .results-title h2{font-size:16px; font-weight:700;}
+  .results-title p{margin:3px 0 0; font-size:12.5px; color:var(--text-mute);}
+  .results-actions{display:flex; gap:8px; align-items:center;}
+  .search-wrap{position:relative;}
+  .search-wrap svg{position:absolute; left:10px; top:50%; transform:translateY(-50%); width:14px; height:14px; color:var(--text-mute);}
+  .search-wrap input{
+    padding:8px 12px 8px 30px; border-radius:9px; border:1px solid var(--border-strong);
+    background:var(--surface-3); color:var(--text); font-size:13px; width:220px; font-family:inherit;
+  }
+  .tabs{
+    display:flex; gap:4px; margin-top:14px; padding-bottom:9px; border-bottom:1px solid var(--border);
+    overflow-x:auto; scrollbar-width:thin;
+  }
+  .tab{
+    flex:none; display:flex; align-items:center; gap:7px; padding:7px 12px; border-radius:8px; border:1px solid transparent;
+    background:none; color:var(--text-2); font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;
+  }
+  .tab:hover{background:var(--surface-2);}
+  .tab.is-active{background:var(--surface-2); color:var(--text); border-color:var(--border);}
+  .tab .count{
+    font-family:"IBM Plex Mono", monospace; font-size:11px; background:var(--surface-2); color:var(--text-mute);
+    padding:1px 6px; border-radius:99px; font-weight:600;
+  }
+  .tab.is-active .count{background:var(--surface); }
+
+  .results-toolbar{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-top:10px;}
+  .excluded-toggle{
+    border:none; background:none; color:var(--accent); font-size:12px; font-weight:600; cursor:pointer; padding:2px 0;
+    text-decoration:underline; text-underline-offset:2px;
+  }
+  .table-scroll{overflow-x:auto; margin-top:10px; border:1px solid var(--border); border-radius:11px;}
+  table{width:100%; border-collapse:collapse; min-width:1180px; font-size:12.8px;}
+  thead th{
+    text-align:left; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em;
+    color:var(--text-mute); background:var(--surface-2); padding:10px 12px; white-space:nowrap; position:sticky; top:0;
+  }
+  th.filterable{position:relative;}
+  .th-inner{display:flex; align-items:center; gap:4px;}
+  .th-filter-btn{
+    border:none; background:none; color:var(--text-mute); cursor:pointer; padding:2px; border-radius:4px; display:flex;
+  }
+  .th-filter-btn svg{width:11px; height:11px;}
+  .th-filter-btn:hover, .th-filter-btn.is-on{background:var(--surface-3); color:var(--accent);}
+  .filter-pop{
+    position:absolute; top:100%; left:0; margin-top:4px; z-index:10; background:var(--surface); border:1px solid var(--border-strong);
+    border-radius:9px; box-shadow:var(--shadow); padding:8px; width:200px; text-transform:none; letter-spacing:normal;
+    font-weight:500; font-size:12.5px; color:var(--text);
+  }
+  .filter-pop-actions{display:flex; justify-content:space-between; margin-bottom:6px; padding-bottom:6px; border-bottom:1px solid var(--border);}
+  .filter-pop-actions button{border:none; background:none; color:var(--accent); font-size:11px; font-weight:600; cursor:pointer; padding:0;}
+  .filter-pop-list{max-height:190px; overflow-y:auto; display:flex; flex-direction:column; gap:5px;}
+  .filter-pop-list label{display:flex; align-items:center; gap:7px; cursor:pointer; font-weight:500;}
+  .filter-pop-list input{margin:0;}
+  .filter-pop-list span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  tbody td{padding:9px 12px; border-top:1px solid var(--border); vertical-align:top;}
+  tbody tr td:first-child{border-left:3px solid transparent;}
+  tbody tr.is-excluded{opacity:.5;}
+  tbody tr.cat-matched td:first-child{border-left-color:var(--good-fg);}
+  tbody tr.cat-mismatch td:first-child{border-left-color:var(--warn-fg);}
+  tbody tr.cat-missing_cmdb td:first-child{border-left-color:var(--crit-fg);}
+  tbody tr.cat-not_onsite td:first-child{border-left-color:var(--absent-fg);}
+  tbody tr.cat-replacement td:first-child{border-left-color:var(--replace-fg);}
+  tbody tr.cat-duplicate td:first-child{border-left-color:var(--dup-fg);}
+  tbody tr.cat-review td:first-child{border-left-color:var(--review-fg);}
+  .cell-serial{font-family:"IBM Plex Mono", monospace; font-size:12px;}
+  .cell-serial.blank{color:var(--text-mute); font-style:italic;}
+  .cell-serial.suggested{
+    color:var(--dup-fg); background:var(--dup-bg); border:1px dashed var(--dup-bd); border-radius:6px;
+    padding:2px 6px; font-style:normal; display:inline-block;
+  }
+  .suggested-tag{display:block; font-family:"IBM Plex Sans"; font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; opacity:.8; margin-top:1px;}
+  .cell-loc .site{font-weight:600;}
+  .cell-loc .room{color:var(--text-mute); font-size:12px;}
+  .cell-finding{color:var(--text-2); max-width:230px;}
+  .cell-action{max-width:190px;}
+  .override-select{
+    width:100%; min-width:112px; font-size:11.5px; padding:5px 6px; border-radius:6px; border:1px solid var(--border-strong);
+    background:var(--surface-3); color:var(--text); font-family:inherit;
+  }
+  .override-select.is-set{border-color:var(--absent-fg); background:var(--absent-bg); color:var(--absent-fg); font-weight:600;}
+  .status-pill{display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border-radius:99px; font-size:11.5px; font-weight:700; border:1px solid; white-space:nowrap;}
+  .status-pill svg{width:12px; height:12px;}
+  .comment-input{
+    width:100%; min-width:130px; border:1px solid transparent; background:transparent; color:var(--text);
+    font-family:inherit; font-size:12.5px; padding:4px 6px; border-radius:6px;
+  }
+  .comment-input:hover{border-color:var(--border-strong);}
+  .comment-input:focus{border-color:var(--focus); background:var(--surface-3);}
+  .row-actions{display:flex; gap:5px;}
+  .reviewed-btn{
+    display:flex; align-items:center; gap:5px; border:1px solid var(--border-strong); background:var(--surface-3);
+    color:var(--text-mute); border-radius:7px; padding:5px 8px; font-size:11.5px; font-weight:600; cursor:pointer;
+  }
+  .reviewed-btn svg{width:12px; height:12px;}
+  .reviewed-btn.is-on{background:var(--good-bg); border-color:var(--good-bd); color:var(--good-fg);}
+
+  .empty-state{padding:56px 20px; text-align:center; color:var(--text-mute); font-size:13.5px;}
+  .empty-state svg{width:34px; height:34px; margin-bottom:12px; color:var(--border-strong);}
+
+  /* ---------- modal ---------- */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(4,12,10,.5); display:flex; align-items:center; justify-content:center;
+    padding:20px; z-index:50;
+  }
+  .modal{
+    background:var(--surface); border-radius:14px; max-width:560px; width:100%; max-height:85vh; overflow-y:auto;
+    padding:22px; box-shadow:var(--shadow); border:1px solid var(--border);
+  }
+  .modal-head{display:flex; align-items:flex-start; justify-content:space-between; gap:10px;}
+  .modal h2{font-size:17px;}
+  .modal h3{font-size:13px; margin-top:16px; margin-bottom:6px; color:var(--accent);}
+  .modal p, .modal li{font-size:13px; color:var(--text-2); line-height:1.55;}
+  .modal ol, .modal ul{padding-left:20px; margin:0;}
+  .modal ol li, .modal ul li{margin-bottom:6px;}
+  .modal code{font-family:"IBM Plex Mono", monospace; background:var(--surface-2); padding:1px 5px; border-radius:4px; font-size:12px;}
+
+  .toast{
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--text); color:var(--bg);
+    padding:10px 16px; border-radius:9px; font-size:13px; font-weight:600; box-shadow:var(--shadow); z-index:60;
+    opacity:0; pointer-events:none; transition:opacity .2s, transform .2s;
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(-4px);}
+
+  @media (prefers-reduced-motion:reduce){ *{transition:none !important;} }
+  [hidden]{display:none !important;}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/><path d="M7 9l2 2 2-3 2 4 2-2"/></svg>
+      </div>
+      <div class="brand-text">
+        <h1>AV Inventory Health Check</h1>
+        <p>Reconciles your physical AV inventory against the ServiceNow CMDB export</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn" id="btnGuide">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H12v18H6.5A2.5 2.5 0 0 1 4 18.5v-13z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H12v18h5.5a2.5 2.5 0 0 0 2.5-2.5v-13z"/></svg>
+        User guide
+      </button>
+      <span class="pill">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+        Browser-only processing
+      </span>
+    </div>
+  </div>
+
+  <div class="grid-top">
+    <div class="card health-card">
+      <div class="health-top">
+        <div>
+          <div class="health-label">Reconciliation health</div>
+        </div>
+        <button class="health-toggle" id="healthToggle" title="Toggle view" aria-label="Toggle health view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>
+        </button>
+      </div>
+      <div class="health-value"><span class="num" id="healthNum">0%</span><span class="unit" id="healthUnit">matched</span></div>
+      <div class="health-bar-track"><div class="health-bar-fill" id="healthBar" style="width:0%"></div></div>
+      <div class="health-caption" id="healthCaption">Upload both files to begin reconciliation.</div>
+      <div id="sampleChipWrap"></div>
+    </div>
+
+    <div class="card upload-card" id="uploadCard-physical" data-slot="physical">
+      <div class="upload-card-head">
+        <div class="upload-card-title">
+          <div class="upload-card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/></svg>
+          </div>
+          <div>
+            <h3>1. Physical AV inventory</h3>
+          </div>
+        </div>
+        <span class="status-chip empty" id="statusChip-physical">Empty</span>
+      </div>
+      <p class="desc">Upload the complete spreadsheet from your physical walkthrough.</p>
+      <div class="upload-filename" id="filename-physical">No file uploaded</div>
+      <div class="mapping" id="mapping-physical" hidden></div>
+      <div class="upload-row">
+        <button class="btn" id="btnUpload-physical">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4.5 4.5 0 0 1-1-8.9A5.5 5.5 0 0 1 16.7 8H17a4 4 0 0 1 0 8h-1"/><path d="M12 12v7M9 15l3-3 3 3"/></svg>
+          Upload spreadsheet
+        </button>
+        <button class="btn btn-icon btn-danger-ghost" id="btnClear-physical" title="Remove file" aria-label="Remove file">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg>
+        </button>
+      </div>
+      <input type="file" id="fileInput-physical" accept=".xlsx,.xls,.csv" hidden>
+      <div class="upload-error" id="error-physical" hidden></div>
+    </div>
+
+    <div class="card upload-card" id="uploadCard-cmdb" data-slot="cmdb">
+      <div class="upload-card-head">
+        <div class="upload-card-title">
+          <div class="upload-card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/></svg>
+          </div>
+          <div>
+            <h3>2. ServiceNow CMDB export</h3>
+          </div>
+        </div>
+        <span class="status-chip empty" id="statusChip-cmdb">Empty</span>
+      </div>
+      <p class="desc">Upload the matching CMDB export from ServiceNow.</p>
+      <div class="upload-filename" id="filename-cmdb">No file uploaded</div>
+      <div class="mapping" id="mapping-cmdb" hidden></div>
+      <div class="upload-row">
+        <button class="btn" id="btnUpload-cmdb">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4.5 4.5 0 0 1-1-8.9A5.5 5.5 0 0 1 16.7 8H17a4 4 0 0 1 0 8h-1"/><path d="M12 12v7M9 15l3-3 3 3"/></svg>
+          Upload spreadsheet
+        </button>
+        <button class="btn btn-icon btn-danger-ghost" id="btnClear-cmdb" title="Remove file" aria-label="Remove file">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg>
+        </button>
+      </div>
+      <input type="file" id="fileInput-cmdb" accept=".xlsx,.xls,.csv" hidden>
+      <div class="upload-error" id="error-cmdb" hidden></div>
+    </div>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="card results-card">
+    <div class="results-head">
+      <div class="results-title">
+        <h2>Reconciliation results</h2>
+        <p>Review proposed actions before changing the CMDB.</p>
+      </div>
+      <div class="results-actions">
+        <div class="search-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input type="text" id="searchInput" placeholder="Search site, room or device">
+        </div>
+        <button class="btn btn-primary" id="btnExport">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M8 12l4 4 4-4"/><path d="M5 19h14"/></svg>
+          Export report
+        </button>
+      </div>
+    </div>
+
+    <div class="tabs" id="tabs"></div>
+
+    <div class="results-toolbar" id="resultsToolbar" hidden>
+      <button class="excluded-toggle" id="btnToggleExcluded" type="button"></button>
+    </div>
+
+    <div id="resultsBody"></div>
+  </div>
+
+</div>
+
+<div class="modal-backdrop" id="guideBackdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
+    <div class="modal-head">
+      <h2 id="guideTitle">User guide</h2>
+      <button class="btn btn-icon btn-ghost" id="btnGuideClose" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <h3>1. Upload two files</h3>
+    <p>Upload your physical AV inventory spreadsheet on the left, and your ServiceNow CMDB export on the right. Both <code>.xlsx</code>, <code>.xls</code> and <code>.csv</code> are supported. Nothing leaves your browser &mdash; files are parsed and matched locally.</p>
+    <h3>2. Check the column mapping</h3>
+    <p>Once a file loads, this app guesses which column holds the serial number, site, room, equipment type and model. A small mapping row appears under the upload &mdash; fix any guess that looks wrong and the results update immediately.</p>
+    <h3>3. Read the results</h3>
+    <p>Every device lands in one category:</p>
+    <ul>
+      <li><b>Matched</b> &mdash; serial found in both, and site/room/model agree.</li>
+      <li><b>Mismatch</b> &mdash; same serial, but a field like room or model disagrees.</li>
+      <li><b>Missing from CMDB</b> &mdash; found onsite, no matching CI in ServiceNow.</li>
+      <li><b>Not found onsite</b> &mdash; a CMDB record with no matching physical device.</li>
+      <li><b>Possible replacement</b> &mdash; a CMDB record went missing, but a new device showed up in the same site/room/equipment slot.</li>
+      <li><b>Duplicate</b> &mdash; the same serial appears more than once on one side.</li>
+      <li><b>Manual review</b> &mdash; a physical record has no serial recorded at all.</li>
+    </ul>
+    <h3>4. Filter, override, and export</h3>
+    <p>Click the small filter icon in the Site, Equipment or Model column headers to narrow the table to specific values. Use the <b>Site</b> and <b>Hardware</b> dropdowns on each row to mark a location as closed or a device as not in use &mdash; those rows are excluded from the health score and tile counts, and are dimmed in the table (with a "show excluded" link above it to bring them back). For anything missing from the CMDB, the suggested CMDB serial (taken from your physical inventory) shows in amber so you know what to enter in ServiceNow. If a device's serial isn't found at all, this app also tries matching by asset tag / CI name as a fallback. Use <b>Export report</b> to download everything as an .xlsx workbook.</p>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  /* ============================ ICONS ============================ */
+  const ICONS = {
+    checkCircle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/></svg>',
+    alertTriangle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4L21.5 20H2.5L12 4z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>',
+    xCircle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg>',
+    search:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
+    swap:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13M17 8l-3-3M17 8l-3 3"/><path d="M20 16H7M7 16l3-3M7 16l3 3"/></svg>',
+    duplicate:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg>',
+    help:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.9.8c0 1.6-2.4 2-2.4 3.4"/><path d="M12 17h.01"/></svg>',
+    grid:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>',
+    file:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/></svg>',
+    inbox:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M5.5 5h13l2 7v6a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-6l2-7z"/></svg>',
+    filter:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6 8v6l-4 2v-8z"/></svg>'
+  };
+
+  /* ============================ CONFIG ============================ */
+  const FIELD_SYNONYMS = {
+    serial:['serial','serialnumber','serialno','sn','serialnum','deviceserial','assetserialnumber'],
+    tag:['assettag','tag','assetid','assetnumber','ciname','name','displayname','hostname','configurationitem','ci'],
+    site:['site','location','building','campus','sitename','businessunit'],
+    room:['room','roomnumber','roomname','space','floorroom','area','locationdetail'],
+    equipment:['equipment','equipmenttype','devicetype','citype','category','class','type','assettype','ciclass'],
+    model:['model','modelnumber','modelno','manufacturermodel','productmodel']
+  };
+  const FIELD_LABELS = {serial:'Serial number', tag:'Asset tag / name (optional)', site:'Site', room:'Room', equipment:'Equipment type', model:'Model'};
+  const MAP_FIELDS = ['serial','tag','site','room','equipment','model'];
+  const FILTER_FIELDS = ['site','equipment','model'];
+  const SITE_STATUS_OPTIONS = [{v:'',label:'Site open'},{v:'closed',label:'Site closed'}];
+  const HW_STATUS_OPTIONS = [{v:'',label:'Hardware in use'},{v:'not_in_use',label:'Not in use'}];
+
+  const CATEGORY_META = {
+    matched:      {label:'Matched',              tabLabel:'Matched',            color:'good',    icon:'checkCircle', action:'No action needed'},
+    mismatch:     {label:'Mismatch',              tabLabel:'Mismatch',           color:'warn',    icon:'alertTriangle', action:'Update the CMDB record to match the physical inventory'},
+    missing_cmdb: {label:'Missing from CMDB',     tabLabel:'Missing from CMDB',  color:'crit',    icon:'xCircle', action:'Create a new CI record in ServiceNow for this device'},
+    not_onsite:   {label:'Not found onsite',      tabLabel:'Not found onsite',   color:'absent',  icon:'search', action:'Confirm the device is decommissioned or relocated, then retire the CI'},
+    replacement:  {label:'Possible replacement',  tabLabel:'Possible replacement', color:'replace', icon:'swap', action:'Confirm the swap and update the CMDB serial and model'},
+    duplicate:    {label:'Duplicate',             tabLabel:'Duplicate',          color:'dup',     icon:'duplicate', action:'Merge or remove the duplicate record'},
+    review:       {label:'Manual review',         tabLabel:'Manual review',     color:'review',  icon:'help', action:'Record a serial number, then re-run reconciliation'}
+  };
+  const CATEGORY_ORDER = ['matched','mismatch','missing_cmdb','not_onsite','replacement','duplicate','review'];
+
+  /* ============================ STATE ============================ */
+  const state = {
+    files:{
+      physical:{name:null, headers:[], rows:[], mapping:null, sample:false},
+      cmdb:{name:null, headers:[], rows:[], mapping:null, sample:false}
+    },
+    results:[],
+    activeTab:'all',
+    search:'',
+    healthView:'percent',
+    nextId:1,
+    filters:{site:new Set(), equipment:new Set(), model:new Set()},
+    openFilter:null,
+    showExcluded:false
+  };
+
+  /* ============================ HELPERS ============================ */
+  function normHeader(h){ return String(h==null?'':h).toLowerCase().replace(/[^a-z0-9]/g,''); }
+  function normSerial(s){ return String(s==null?'':s).trim().toUpperCase().replace(/[^A-Z0-9]/g,''); }
+  function normText(s){ return String(s==null?'':s).trim().toLowerCase().replace(/\s+/g,' '); }
+  function cellStr(v){ return v==null? '': String(v).trim(); }
+  function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  function detectMapping(headers){
+    const norm = headers.map(normHeader);
+    const used = new Set();
+    const mapping = {};
+    ['serial','tag','site','room','equipment','model'].forEach(field=>{
+      const syns = FIELD_SYNONYMS[field];
+      let best=-1, bestScore=-1;
+      norm.forEach((h,i)=>{
+        if(used.has(i) || !h) return;
+        let score=-1;
+        if(syns.includes(h)) score=2;
+        else if(syns.some(s=>h.includes(s)||s.includes(h))) score=1;
+        if(score>bestScore){ bestScore=score; best=i; }
+      });
+      if(best>=0 && bestScore>=1){ mapping[field]=best; used.add(best); }
+      else mapping[field]=-1;
+    });
+    return mapping;
+  }
+
+  function getField(row, mapping, field){
+    const idx = mapping[field];
+    if(idx==null || idx<0) return '';
+    return cellStr(row[idx]);
+  }
+
+  /* ============================ FILE PARSING ============================ */
+  function parseFile(file){
+    return new Promise((resolve,reject)=>{
+      const reader = new FileReader();
+      reader.onload = e=>{
+        try{
+          const data = new Uint8Array(e.target.result);
+          const wb = XLSX.read(data, {type:'array'});
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:'', raw:false});
+          let headerIdx = rows.findIndex(r=>r.filter(c=>cellStr(c)!=='').length>=2);
+          if(headerIdx<0) headerIdx = 0;
+          const headers = (rows[headerIdx]||[]).map(h=>cellStr(h));
+          const dataRows = rows.slice(headerIdx+1).filter(r=>r.some(c=>cellStr(c)!==''));
+          if(headers.length===0 || dataRows.length===0){ reject(new Error('No rows found in this file.')); return; }
+          resolve({headers, rows:dataRows});
+        }catch(err){ reject(err); }
+      };
+      reader.onerror = ()=>reject(reader.error||new Error('Could not read file.'));
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  /* ============================ RECONCILIATION ============================ */
+  function runReconciliation(){
+    const phys = state.files.physical;
+    const cmdb = state.files.cmdb;
+    state.results = [];
+    if(!phys.headers.length || !cmdb.headers.length) return;
+
+    const pm = phys.mapping, cm = cmdb.mapping;
+
+    // Build cmdb serial index
+    const cmdbBySerial = new Map();
+    cmdb.rows.forEach((row,i)=>{
+      const s = normSerial(getField(row, cm, 'serial'));
+      if(!s) return;
+      if(!cmdbBySerial.has(s)) cmdbBySerial.set(s, []);
+      cmdbBySerial.get(s).push(i);
+    });
+    const physBySerial = new Map();
+    phys.rows.forEach((row,i)=>{
+      const s = normSerial(getField(row, pm, 'serial'));
+      if(!s) return;
+      if(!physBySerial.has(s)) physBySerial.set(s, []);
+      physBySerial.get(s).push(i);
+    });
+    // Secondary key: asset tag / CI name — used when a serial isn't found,
+    // since many ServiceNow CMDBs track AV gear by tag rather than true serial.
+    const cmdbByTag = new Map();
+    cmdb.rows.forEach((row,i)=>{
+      const t = normText(getField(row, cm, 'tag'));
+      if(!t) return;
+      if(!cmdbByTag.has(t)) cmdbByTag.set(t, []);
+      cmdbByTag.get(t).push(i);
+    });
+
+    const claimedCmdb = new Set();
+    const push = (cat, f)=>{
+      state.results.push(Object.assign({
+        id:state.nextId++, category:cat, comments:'', reviewed:false,
+        siteStatus:'', hwStatus:'',
+        action: CATEGORY_META[cat].action
+      }, f));
+    };
+    const diffFields = (site, room, equip, model, crow, cm)=>{
+      const diffs = [];
+      const cSite = getField(crow, cm, 'site'), cRoom = getField(crow, cm, 'room'), cEquip = getField(crow, cm, 'equipment'), cModel = getField(crow, cm, 'model');
+      if(site && cSite && normText(site)!==normText(cSite)) diffs.push('Site differs (inventory: '+site+', CMDB: '+cSite+')');
+      if(room && cRoom && normText(room)!==normText(cRoom)) diffs.push('Room differs (inventory: '+room+', CMDB: '+cRoom+')');
+      if(equip && cEquip && normText(equip)!==normText(cEquip)) diffs.push('Equipment type differs (inventory: '+equip+', CMDB: '+cEquip+')');
+      if(model && cModel && normText(model)!==normText(cModel)) diffs.push('Model differs (inventory: '+model+', CMDB: '+cModel+')');
+      return {diffs, cSite, cRoom, cEquip, cModel};
+    };
+
+    phys.rows.forEach((row,i)=>{
+      const site = getField(row, pm, 'site');
+      const room = getField(row, pm, 'room');
+      const equip = getField(row, pm, 'equipment');
+      const model = getField(row, pm, 'model');
+      const serialRaw = getField(row, pm, 'serial');
+      const serialNorm = normSerial(serialRaw);
+
+      if(!serialNorm){
+        push('review', {site, room, equipment:equip, model, invSerial:'', cmdbSerial:'', finding:'No serial number recorded for this physical inventory item.'});
+        return;
+      }
+      const physGroup = physBySerial.get(serialNorm);
+      if(physGroup && physGroup.length>1){
+        push('duplicate', {site, room, equipment:equip, model, invSerial:serialRaw, cmdbSerial:'', finding:'Serial appears '+physGroup.length+' times in the physical inventory.'});
+        return;
+      }
+
+      const matches = (cmdbBySerial.get(serialNorm)||[]).filter(idx=>!claimedCmdb.has(idx));
+      const allMatches = cmdbBySerial.get(serialNorm)||[];
+
+      if(allMatches.length===0){
+        // try matching by asset tag / CI name before giving up on a CMDB match
+        const physTag = normText(getField(row, pm, 'tag'));
+        const tagMatches = physTag ? (cmdbByTag.get(physTag)||[]).filter(idx=>!claimedCmdb.has(idx)) : [];
+        if(tagMatches.length===1){
+          const ci = tagMatches[0];
+          claimedCmdb.add(ci);
+          const crow = cmdb.rows[ci];
+          const {diffs} = diffFields(site, room, equip, model, crow, cm);
+          const cSerialTag = getField(crow, cm, 'serial');
+          if(diffs.length===0){
+            push('matched', {site, room, equipment:equip, model, invSerial:serialRaw, cmdbSerial:cSerialTag, finding:'Matched by asset tag (serial not recorded in CMDB).'});
+          } else {
+            push('mismatch', {site, room, equipment:equip, model, invSerial:serialRaw, cmdbSerial:cSerialTag, finding:'Matched by asset tag; '+diffs.join('; ')});
+          }
+          return;
+        }
+        // try possible-replacement: an unclaimed cmdb row with same site+room+equipment, different serial
+        let candidate=-1, candidateCount=0;
+        cmdb.rows.forEach((crow,ci)=>{
+          if(claimedCmdb.has(ci)) return;
+          const cSerial = normSerial(getField(crow, cm, 'serial'));
+          if(!cSerial) return;
+          const sameSite = normText(getField(crow, cm, 'site'))===normText(site) && normText(site)!=='';
+          const sameRoom = normText(getField(crow, cm, 'room'))===normText(room) && normText(room)!=='';
+          const sameEquip = normText(getField(crow, cm, 'equipment'))===normText(equip) && normText(equip)!=='';
+          if(sameSite && sameRoom && sameEquip){ candidateCount++; candidate=ci; }
+        });
+        if(candidateCount===1){
+          claimedCmdb.add(candidate);
+          const crow = cmdb.rows[candidate];
+          const cSerial = getField(crow, cm, 'serial');
+          push('replacement', {site, room, equipment:equip, model, invSerial:serialRaw, cmdbSerial:cSerial,
+            finding:'No CMDB match by serial, but the same site / room / equipment holds CI serial '+cSerial+' — possibly swapped.'});
+        } else {
+          push('missing_cmdb', {site, room, equipment:equip, model, invSerial:serialRaw, cmdbSerial:'', finding:'Serial not found anywhere in the ServiceNow CMDB export.'});
+        }
+        return;
+      }
+
+      if(allMatches.length>1){
+        allMatches.forEach(idx=>claimedCmdb.add(idx));
+        push('duplicate', {site, room, equipment:equip, model, invSerial:serialRaw, cmdbSerial:getField(cmdb.rows[allMatches[0]],cm,'serial'),
+          finding:'Serial appears '+allMatches.length+' times in the ServiceNow CMDB export.'});
+        return;
+      }
+
+      const ci = allMatches[0];
+      claimedCmdb.add(ci);
+      const crow = cmdb.rows[ci];
+      const diffs = [];
+      const cSite = getField(crow, cm, 'site'), cRoom = getField(crow, cm, 'room'), cEquip = getField(crow, cm, 'equipment'), cModel = getField(crow, cm, 'model');
+      if(site && cSite && normText(site)!==normText(cSite)) diffs.push('Site differs (inventory: '+site+', CMDB: '+cSite+')');
+      if(room && cRoom && normText(room)!==normText(cRoom)) diffs.push('Room differs (inventory: '+room+', CMDB: '+cRoom+')');
+      if(equip && cEquip && normText(equip)!==normText(cEquip)) diffs.push('Equipment type differs (inventory: '+equip+', CMDB: '+cEquip+')');
+      if(model && cModel && normText(model)!==normText(cModel)) diffs.push('Model differs (inventory: '+model+', CMDB: '+cModel+')');
+
+      if(diffs.length===0){
+        push('matched', {site, room, equipment:equip, model, invSerial:serialRaw, cmdbSerial:getField(crow,cm,'serial'), finding:''});
+      } else {
+        push('mismatch', {site:site||cSite, room:room||cRoom, equipment:equip||cEquip, model:model||cModel, invSerial:serialRaw, cmdbSerial:getField(crow,cm,'serial'), finding:diffs.join('; ')});
+      }
+    });
+
+    // duplicate cmdb-only serials with zero physical matches
+    const cmdbDupSerials = new Set();
+    cmdbBySerial.forEach((idxs,s)=>{ if(idxs.length>1) cmdbDupSerials.add(s); });
+
+    cmdb.rows.forEach((row,i)=>{
+      if(claimedCmdb.has(i)) return;
+      const site = getField(row, cm, 'site');
+      const room = getField(row, cm, 'room');
+      const equip = getField(row, cm, 'equipment');
+      const model = getField(row, cm, 'model');
+      const serialRaw = getField(row, cm, 'serial');
+      const serialNorm = normSerial(serialRaw);
+      if(serialNorm && cmdbDupSerials.has(serialNorm)){
+        push('duplicate', {site, room, equipment:equip, model, invSerial:'', cmdbSerial:serialRaw, finding:'Duplicate CI serial in the ServiceNow CMDB export (no matching physical record).'});
+      } else {
+        push('not_onsite', {site, room, equipment:equip, model, invSerial:'', cmdbSerial:serialRaw, finding:'Recorded in the ServiceNow CMDB but no matching physical inventory record was found.'});
+      }
+    });
+  }
+
+  /* ============================ SAMPLE DATA ============================ */
+  function loadSampleData(){
+    const physHeaders = ['Site','Room','Equipment Type','Model','Serial Number'];
+    const physRows = [
+      ['HQ - Austin','Boardroom 2A','Display','Samsung QM75R','SNA10001'],
+      ['HQ - Austin','Boardroom 2A','Video Bar','Poly Studio X50','SNA10002'],
+      ['HQ - Austin','Huddle 5','Display','LG 55UR','SNA10003'],
+      ['HQ - Austin','Huddle 6','DSP','QSC Core 110f','SNA10004'],
+      ['HQ - Austin','Huddle 6','DSP','QSC Core 110f','SNA10004'],
+      ['HQ - Austin','Training Room','Projector','Epson G7900U','SNA10006'],
+      ['HQ - Austin','Lobby','Signage Player','BrightSign XD1035',''],
+      ['HQ - Austin','Ops Center','Switcher','Extron DTP','SNA10008']
+    ];
+    const cmdbHeaders = ['Location','Room','CI Type','Model','Serial Number'];
+    const cmdbRows = [
+      ['HQ - Austin','Boardroom 2A','Display','Samsung QM75R','SNA10001'],
+      ['HQ - Austin','Boardroom 2B','Video Bar','Poly Studio X50','SNA10002'],
+      ['HQ - Austin','Training Room','Projector','Epson G7000U','SNA10099'],
+      ['HQ - Austin','Ops Center','Switcher','Extron DTP','SNA10008'],
+      ['HQ - Austin','Data Closet 3','Amplifier','QSC CX408','SNA10010'],
+      ['HQ - Austin','Data Closet 3','Amplifier','QSC CX408','SNA10010'],
+      ['HQ - Austin','Reception','Camera','Logitech Rally','SNA10011']
+    ];
+    setFile('physical', {headers:physHeaders, rows:physRows}, true, 'Sample: Physical AV Inventory.xlsx');
+    setFile('cmdb', {headers:cmdbHeaders, rows:cmdbRows}, true, 'Sample: ServiceNow CMDB Export.xlsx');
+    showToast('Sample data loaded — try the tabs below, then clear it to upload your own files.');
+  }
+
+  function clearSampleIfAny(){
+    if(state.files.physical.sample) clearFile('physical');
+    if(state.files.cmdb.sample) clearFile('cmdb');
+  }
+
+  /* ============================ LOCAL PERSISTENCE ============================ */
+  // Remembers your uploaded files (headers, rows, column mapping) in this
+  // browser only, so re-opening the page or getting an update doesn't force
+  // you to re-upload. Nothing is ever sent anywhere; a private/blocked-storage
+  // browser just quietly won't remember, which is fine.
+  const STORAGE_PREFIX = 'avhc:v1:';
+  function saveFileToStorage(slot){
+    try{
+      const f = state.files[slot];
+      if(!f.name || f.sample){ localStorage.removeItem(STORAGE_PREFIX+slot); return; }
+      localStorage.setItem(STORAGE_PREFIX+slot, JSON.stringify(f));
+    }catch(e){ /* storage unavailable or full — app still works, just won't remember */ }
+  }
+  function loadFileFromStorage(slot){
+    try{
+      const raw = localStorage.getItem(STORAGE_PREFIX+slot);
+      return raw ? JSON.parse(raw) : null;
+    }catch(e){ return null; }
+  }
+  function clearFileStorage(slot){
+    try{ localStorage.removeItem(STORAGE_PREFIX+slot); }catch(e){}
+  }
+  function restoreFilesFromStorage(){
+    let restoredAny = false;
+    ['physical','cmdb'].forEach(slot=>{
+      const saved = loadFileFromStorage(slot);
+      if(saved && saved.headers && saved.headers.length && saved.mapping){
+        state.files[slot] = saved;
+        renderUploadCard(slot);
+        restoredAny = true;
+      }
+    });
+    return restoredAny;
+  }
+
+  /* ============================ RENDERING ============================ */
+  function setFile(slot, parsed, isSample, displayName){
+    const mapping = detectMapping(parsed.headers);
+    state.files[slot] = {name:displayName, headers:parsed.headers, rows:parsed.rows, mapping, sample:!!isSample};
+    saveFileToStorage(slot);
+    renderUploadCard(slot);
+    runReconciliation();
+    renderAll();
+  }
+
+  function clearFile(slot){
+    state.files[slot] = {name:null, headers:[], rows:[], mapping:null, sample:false};
+    document.getElementById('fileInput-'+slot).value = '';
+    clearFileStorage(slot);
+    renderUploadCard(slot);
+    runReconciliation();
+    renderAll();
+  }
+
+  function renderUploadCard(slot){
+    const f = state.files[slot];
+    const chip = document.getElementById('statusChip-'+slot);
+    const fname = document.getElementById('filename-'+slot);
+    const mapWrap = document.getElementById('mapping-'+slot);
+    const err = document.getElementById('error-'+slot);
+    err.hidden = true;
+
+    if(!f.name){
+      chip.textContent = 'Empty'; chip.className='status-chip empty';
+      fname.innerHTML = 'No file uploaded';
+      mapWrap.hidden = true; mapWrap.innerHTML='';
+      return;
+    }
+    chip.textContent = f.sample ? 'Sample' : 'Loaded'; chip.className='status-chip loaded';
+    fname.innerHTML = ICONS.file + '<span>'+escapeHtml(f.name)+'</span><span class="rows">'+f.rows.length+' rows</span>';
+
+    mapWrap.hidden = false;
+    mapWrap.innerHTML = MAP_FIELDS.map(field=>{
+      const opts = ['<option value="-1">— not present —</option>']
+        .concat(f.headers.map((h,i)=>'<option value="'+i+'"'+(f.mapping[field]===i?' selected':'')+'>'+escapeHtml(h||'(column '+(i+1)+')')+'</option>'))
+        .join('');
+      return '<div><label>'+FIELD_LABELS[field]+'</label><select data-slot="'+slot+'" data-field="'+field+'">'+opts+'</select></div>';
+    }).join('');
+  }
+
+  // Rows the user has marked as "site closed" or "hardware not in use" are
+  // dismissed: they don't count as open gaps, though they stay visible
+  // (dimmed) in the table when "show excluded" is on.
+  function isExcluded(r){ return r.siteStatus==='closed' || r.hwStatus==='not_in_use'; }
+  function effectiveResults(){ return state.results.filter(r=>!isExcluded(r)); }
+
+  function computeCounts(){
+    const counts = {}; CATEGORY_ORDER.forEach(c=>counts[c]=0);
+    effectiveResults().forEach(r=>counts[r.category]++);
+    return counts;
+  }
+
+  function renderHealth(){
+    const counts = computeCounts();
+    const physCount = state.files.physical.rows.length;
+    const matched = counts.matched||0;
+    const pct = physCount>0 ? Math.round((matched/physCount)*100) : 0;
+
+    const numEl = document.getElementById('healthNum');
+    const unitEl = document.getElementById('healthUnit');
+    if(state.healthView==='percent'){
+      numEl.textContent = pct+'%'; unitEl.textContent='matched';
+    } else {
+      numEl.textContent = matched+' / '+physCount; unitEl.textContent='matched';
+    }
+    document.getElementById('healthBar').style.width = pct+'%';
+    document.getElementById('healthCaption').textContent =
+      (physCount>0)
+        ? matched+' of '+physCount+' physical inventory records match the CMDB.'
+        : 'Upload both files to begin reconciliation.';
+
+    const wrap = document.getElementById('sampleChipWrap');
+    const anySample = state.files.physical.sample || state.files.cmdb.sample;
+    wrap.innerHTML = anySample
+      ? '<div class="health-sample-chip">'+ICONS.inbox+' Showing sample data <button id="btnClearSample">clear</button></div>'
+      : '';
+    const csBtn = document.getElementById('btnClearSample');
+    if(csBtn) csBtn.addEventListener('click', clearSampleIfAny);
+  }
+
+  function renderTiles(){
+    const counts = computeCounts();
+    const wrap = document.getElementById('tiles');
+    wrap.innerHTML = CATEGORY_ORDER.map(cat=>{
+      const meta = CATEGORY_META[cat];
+      const active = state.activeTab===cat ? ' is-active' : '';
+      return '<button class="tile'+active+'" data-tab="'+cat+'" style="border-color:var(--'+meta.color+'-bd)">'
+        + '<div class="tile-icon" style="background:var(--'+meta.color+'-bg); color:var(--'+meta.color+'-fg)">'+ICONS[meta.icon]+'</div>'
+        + '<div class="tile-value">'+(counts[cat]||0)+'</div>'
+        + '<div class="tile-label">'+meta.label+'</div>'
+        + '</button>';
+    }).join('');
+    wrap.querySelectorAll('.tile').forEach(el=>el.addEventListener('click', ()=>{
+      state.activeTab = el.getAttribute('data-tab');
+      renderAll();
+    }));
+  }
+
+  function renderTabs(){
+    const counts = computeCounts();
+    const total = effectiveResults().length;
+    const wrap = document.getElementById('tabs');
+    const tabsData = [{id:'all', label:'All', count:total}]
+      .concat(CATEGORY_ORDER.map(cat=>({id:cat, label:CATEGORY_META[cat].tabLabel, count:counts[cat]||0})));
+    wrap.innerHTML = tabsData.map(t=>{
+      const active = state.activeTab===t.id ? ' is-active' : '';
+      return '<button class="tab'+active+'" data-tab="'+t.id+'">'+t.label+' <span class="count">'+t.count+'</span></button>';
+    }).join('');
+    wrap.querySelectorAll('.tab').forEach(el=>el.addEventListener('click', ()=>{
+      state.activeTab = el.getAttribute('data-tab');
+      renderAll();
+    }));
+  }
+
+  function uniqueValues(field){
+    const seen = new Set();
+    state.results.forEach(r=>{ const v = (r[field]||'').trim(); if(v) seen.add(v); });
+    return Array.from(seen).sort((a,b)=>a.localeCompare(b));
+  }
+
+  function filteredResults(){
+    let rows = state.showExcluded ? state.results : effectiveResults();
+    if(state.activeTab!=='all') rows = rows.filter(r=>r.category===state.activeTab);
+    FILTER_FIELDS.forEach(field=>{
+      const excluded = state.filters[field];
+      if(excluded && excluded.size>0) rows = rows.filter(r=>!excluded.has((r[field]||'').trim()));
+    });
+    const q = normText(state.search);
+    if(q){
+      rows = rows.filter(r=>{
+        return [r.site,r.room,r.equipment,r.model,r.invSerial,r.cmdbSerial].some(v=>normText(v).includes(q));
+      });
+    }
+    return rows;
+  }
+
+  function renderExcludedToggle(){
+    const toolbar = document.getElementById('resultsToolbar');
+    const btn = document.getElementById('btnToggleExcluded');
+    const n = state.results.filter(isExcluded).length;
+    if(n===0){ toolbar.hidden = true; return; }
+    toolbar.hidden = false;
+    btn.textContent = state.showExcluded
+      ? 'Hide '+n+' closed / not-in-use item'+(n===1?'':'s')
+      : 'Show '+n+' closed / not-in-use item'+(n===1?'':'s')+' (excluded from counts)';
+  }
+
+  function filterHeaderCell(field, label){
+    const values = uniqueValues(field);
+    if(values.length===0) return '<th>'+label+'</th>';
+    const excluded = state.filters[field];
+    const isOn = excluded.size>0;
+    const open = state.openFilter===field;
+    const rows = values.map(v=>{
+      const checked = !excluded.has(v);
+      return '<label><input type="checkbox" data-filter-field="'+field+'" data-filter-value="'+escapeHtml(v)+'" '+(checked?'checked':'')+'><span title="'+escapeHtml(v)+'">'+escapeHtml(v)+'</span></label>';
+    }).join('');
+    return '<th class="filterable"><div class="th-inner">'+label
+      + '<button type="button" class="th-filter-btn'+(isOn?' is-on':'')+'" data-filter-toggle="'+field+'" aria-label="Filter '+label+'">'+ICONS.filter+'</button>'
+      + '</div>'
+      + (open ? '<div class="filter-pop" data-filter-pop="'+field+'">'
+          + '<div class="filter-pop-actions"><button type="button" data-filter-all="'+field+'">Select all</button><button type="button" data-filter-none="'+field+'">Clear all</button></div>'
+          + '<div class="filter-pop-list">'+rows+'</div></div>' : '')
+      + '</th>';
+  }
+
+  function renderResultsBody(){
+    const wrap = document.getElementById('resultsBody');
+    renderExcludedToggle();
+    if(!state.files.physical.headers.length || !state.files.cmdb.headers.length){
+      wrap.innerHTML = '<div class="empty-state">'+ICONS.inbox
+        + '<div>Upload both the physical AV inventory and the ServiceNow CMDB export to begin the comparison.</div></div>';
+      return;
+    }
+    const rows = filteredResults();
+    if(rows.length===0){
+      wrap.innerHTML = '<div class="empty-state">'+ICONS.search+'<div>No results match this filter.</div></div>';
+      return;
+    }
+    const trs = rows.map(r=>{
+      const meta = CATEGORY_META[r.category];
+      const excludedCls = isExcluded(r) ? ' is-excluded' : '';
+      const cmdbSerialCell = (!r.cmdbSerial && r.category==='missing_cmdb' && r.invSerial)
+        ? '<span class="cell-serial suggested" title="Suggested from the physical inventory — not yet in the CMDB">'+escapeHtml(r.invSerial)+'<span class="suggested-tag">Suggested</span></span>'
+        : '<span class="cell-serial'+(r.cmdbSerial?'':' blank')+'">'+escapeHtml(r.cmdbSerial||'none')+'</span>';
+      const siteOpts = SITE_STATUS_OPTIONS.map(o=>'<option value="'+o.v+'"'+(r.siteStatus===o.v?' selected':'')+'>'+o.label+'</option>').join('');
+      const hwOpts = HW_STATUS_OPTIONS.map(o=>'<option value="'+o.v+'"'+(r.hwStatus===o.v?' selected':'')+'>'+o.label+'</option>').join('');
+      return '<tr class="cat-'+r.category+excludedCls+'" data-id="'+r.id+'">'
+        + '<td><span class="status-pill" style="background:var(--'+meta.color+'-bg); color:var(--'+meta.color+'-fg); border-color:var(--'+meta.color+'-bd)">'+ICONS[meta.icon]+meta.label+'</span></td>'
+        + '<td class="cell-loc"><div class="site">'+escapeHtml(r.site||'—')+'</div><div class="room">'+escapeHtml(r.room||'')+'</div></td>'
+        + '<td><select class="override-select'+(r.siteStatus?' is-set':'')+'" data-override="siteStatus" data-id="'+r.id+'">'+siteOpts+'</select></td>'
+        + '<td><select class="override-select'+(r.hwStatus?' is-set':'')+'" data-override="hwStatus" data-id="'+r.id+'">'+hwOpts+'</select></td>'
+        + '<td>'+escapeHtml(r.equipment||'—')+'</td>'
+        + '<td>'+escapeHtml(r.model||'—')+'</td>'
+        + '<td class="cell-serial'+(r.invSerial?'':' blank')+'">'+escapeHtml(r.invSerial||'none')+'</td>'
+        + '<td>'+cmdbSerialCell+'</td>'
+        + '<td class="cell-finding">'+escapeHtml(r.finding||'—')+'</td>'
+        + '<td class="cell-action">'+escapeHtml(r.action||'—')+'</td>'
+        + '<td><input type="text" class="comment-input" data-id="'+r.id+'" placeholder="Add a note…" value="'+escapeHtml(r.comments)+'"></td>'
+        + '<td><div class="row-actions"><button class="reviewed-btn'+(r.reviewed?' is-on':'')+'" data-id="'+r.id+'">'+ICONS.checkCircle+(r.reviewed?'Reviewed':'Mark reviewed')+'</button></div></td>'
+        + '</tr>';
+    }).join('');
+    wrap.innerHTML = '<div class="table-scroll"><table>'
+      + '<thead><tr><th>Status</th>'
+      + filterHeaderCell('site','Site / room')
+      + '<th>Site status</th><th>Hardware status</th>'
+      + filterHeaderCell('equipment','Equipment')
+      + filterHeaderCell('model','Model')
+      + '<th>Inventory serial</th><th>CMDB serial</th><th>Difference or finding</th><th>Recommended action</th><th>Comments</th><th>Actions</th></tr></thead>'
+      + '<tbody>'+trs+'</tbody></table></div>';
+
+    wrap.querySelectorAll('.comment-input').forEach(el=>{
+      el.addEventListener('change', ()=>{
+        const row = state.results.find(r=>r.id===Number(el.getAttribute('data-id')));
+        if(row) row.comments = el.value;
+      });
+    });
+    wrap.querySelectorAll('.reviewed-btn').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const row = state.results.find(r=>r.id===Number(el.getAttribute('data-id')));
+        if(row){ row.reviewed = !row.reviewed; renderResultsBody(); }
+      });
+    });
+    wrap.querySelectorAll('.override-select').forEach(el=>{
+      el.addEventListener('change', ()=>{
+        const row = state.results.find(r=>r.id===Number(el.getAttribute('data-id')));
+        const key = el.getAttribute('data-override');
+        if(row){ row[key] = el.value; renderAll(); }
+      });
+    });
+    wrap.querySelectorAll('[data-filter-toggle]').forEach(el=>{
+      el.addEventListener('click', e=>{
+        e.stopPropagation();
+        const field = el.getAttribute('data-filter-toggle');
+        state.openFilter = state.openFilter===field ? null : field;
+        renderResultsBody();
+      });
+    });
+    wrap.querySelectorAll('[data-filter-pop]').forEach(el=>el.addEventListener('click', e=>e.stopPropagation()));
+    wrap.querySelectorAll('[data-filter-field]').forEach(el=>{
+      el.addEventListener('change', ()=>{
+        const field = el.getAttribute('data-filter-field');
+        const value = el.getAttribute('data-filter-value');
+        if(el.checked) state.filters[field].delete(value);
+        else state.filters[field].add(value);
+        renderResultsBody();
+      });
+    });
+    wrap.querySelectorAll('[data-filter-all]').forEach(el=>{
+      el.addEventListener('click', ()=>{ state.filters[el.getAttribute('data-filter-all')].clear(); renderResultsBody(); });
+    });
+    wrap.querySelectorAll('[data-filter-none]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const field = el.getAttribute('data-filter-none');
+        state.filters[field] = new Set(uniqueValues(field));
+        renderResultsBody();
+      });
+    });
+  }
+
+  function renderAll(){
+    renderHealth();
+    renderTiles();
+    renderTabs();
+    renderResultsBody();
+  }
+
+  /* ============================ TOAST ============================ */
+  let toastTimer=null;
+  function showToast(msg){
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=>el.classList.remove('show'), 3200);
+  }
+
+  /* ============================ EXPORT ============================ */
+  async function exportReport(){
+    if(state.results.length===0){ showToast('Nothing to export yet — upload both files first.'); return; }
+    const header = ['Status','Site','Room','Equipment','Model','Inventory Serial','CMDB Serial (suggested if blank)','Difference or Finding','Recommended Action','Site status','Hardware status','Comments','Reviewed'];
+    const data = [header].concat(state.results.map(r=>[
+      CATEGORY_META[r.category].label, r.site||'', r.room||'', r.equipment||'', r.model||'',
+      r.invSerial||'',
+      r.cmdbSerial || (r.category==='missing_cmdb' && r.invSerial ? r.invSerial+' (suggested)' : ''),
+      r.finding||'', r.action||'',
+      r.siteStatus==='closed' ? 'Closed' : 'Open',
+      r.hwStatus==='not_in_use' ? 'Not in use' : 'In use',
+      r.comments||'', r.reviewed?'Yes':'No'
+    ]));
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    ws['!cols'] = [{wch:18},{wch:16},{wch:14},{wch:16},{wch:16},{wch:16},{wch:22},{wch:36},{wch:34},{wch:11},{wch:13},{wch:24},{wch:9}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Reconciliation');
+    const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+    const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+
+    const downloads = (window.claude && typeof window.claude.use === 'function') ? await window.claude.use('downloads') : null;
+    if(downloads){
+      try{
+        const res = await downloads.save({filename:'av-inventory-reconciliation.xlsx', data:blob});
+        showToast(res && res.status==='delivered' ? 'Report sent.' : 'Report saved.');
+        return;
+      }catch(err){
+        if(err && err.code==='declined'){ return; /* user said no, do nothing */ }
+        // fall through to the plain browser download below for any other failure
+      }
+    }
+    // Plain browser download — used when running outside the Claude artifact
+    // sandbox (e.g. self-hosted), where window.claude isn't present at all.
+    try{
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'av-inventory-reconciliation.xlsx';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 4000);
+      showToast('Report downloaded.');
+    }catch(err){
+      showToast('Could not generate the report right now.');
+    }
+  }
+
+  /* ============================ WIRING ============================ */
+  ['physical','cmdb'].forEach(slot=>{
+    const input = document.getElementById('fileInput-'+slot);
+    document.getElementById('btnUpload-'+slot).addEventListener('click', ()=>input.click());
+    document.getElementById('btnClear-'+slot).addEventListener('click', ()=>clearFile(slot));
+    input.addEventListener('change', ()=>{
+      const file = input.files && input.files[0];
+      if(!file) return;
+      const errEl = document.getElementById('error-'+slot);
+      errEl.hidden = true;
+      parseFile(file).then(parsed=>{
+        setFile(slot, parsed, false, file.name);
+      }).catch(err=>{
+        errEl.textContent = err.message || 'Could not read that file. Please upload a valid .xlsx, .xls or .csv file.';
+        errEl.hidden = false;
+      });
+    });
+    document.getElementById('uploadCard-'+slot).addEventListener('dragover', e=>{ e.preventDefault(); });
+    document.getElementById('uploadCard-'+slot).addEventListener('drop', e=>{
+      e.preventDefault();
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if(!file) return;
+      const errEl = document.getElementById('error-'+slot);
+      errEl.hidden = true;
+      parseFile(file).then(parsed=>{
+        setFile(slot, parsed, false, file.name);
+      }).catch(err=>{
+        errEl.textContent = err.message || 'Could not read that file. Please upload a valid .xlsx, .xls or .csv file.';
+        errEl.hidden = false;
+      });
+    });
+    document.getElementById('mapping-'+slot).addEventListener('change', e=>{
+      const sel = e.target;
+      if(sel.tagName!=='SELECT') return;
+      const field = sel.getAttribute('data-field');
+      state.files[slot].mapping[field] = Number(sel.value);
+      saveFileToStorage(slot);
+      runReconciliation();
+      renderAll();
+    });
+  });
+
+  document.getElementById('healthToggle').addEventListener('click', ()=>{
+    state.healthView = state.healthView==='percent' ? 'ratio' : 'percent';
+    renderHealth();
+  });
+
+  document.getElementById('searchInput').addEventListener('input', e=>{
+    state.search = e.target.value;
+    renderResultsBody();
+  });
+
+  document.getElementById('btnToggleExcluded').addEventListener('click', ()=>{
+    state.showExcluded = !state.showExcluded;
+    renderResultsBody();
+  });
+  document.addEventListener('click', ()=>{
+    if(state.openFilter){ state.openFilter = null; renderResultsBody(); }
+  });
+
+  document.getElementById('btnExport').addEventListener('click', exportReport);
+
+  document.getElementById('btnGuide').addEventListener('click', ()=>{ document.getElementById('guideBackdrop').hidden = false; });
+  document.getElementById('btnGuideClose').addEventListener('click', ()=>{ document.getElementById('guideBackdrop').hidden = true; });
+  document.getElementById('guideBackdrop').addEventListener('click', e=>{ if(e.target.id==='guideBackdrop') e.currentTarget.hidden = true; });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') document.getElementById('guideBackdrop').hidden = true; });
+
+  /* ============================ INIT ============================ */
+  renderUploadCard('physical');
+  renderUploadCard('cmdb');
+  if(restoreFilesFromStorage()){
+    runReconciliation();
+    renderAll();
+    showToast('Restored your previously uploaded files from this browser.');
+  } else {
+    renderAll();
+    loadSampleData();
+  }
+
+})();
+</script>
+
+</body>
+</html>
